@@ -3,7 +3,7 @@ import { $ } from "bun";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { CODE, DATA, HOME_DIR, P } from "./core";
+import { CODE, DATA, HOME_DIR, L, P } from "./core";
 
 const STATE_DIRS = [
   "tasks/proposed", "tasks/rejected", "tasks/waiting", "tasks/inbox", "tasks/active", "tasks/blocked", "tasks/failed", "tasks/done",
@@ -102,13 +102,44 @@ export function updateRejected(up: string, file = REJECTED()): boolean {
   try { return readFileSync(file, "utf8").trim() === up; } catch { return false; }
 }
 
+const EDITS_NOTE = () => join(HOME_DIR, "update-blocked-noted"); // machine-local: last day we said why we are stale
+
+/** The files that block an update, from `git status --porcelain` (drop the XY code, keep the path). */
+export function dirtyPaths(status: string): string {
+  return status.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => l.replace(/^\S+\s+/, "")).slice(0, 6).join(", ");
+}
+
+/** Local edits stop self-update for as long as they exist — silently. Observed: four uncommitted files in the
+ *  checkout (one app/App.tsx tweak + three deleted bin/ shims) froze a host on a 2-day-old release while origin
+ *  had the metrics fix and two other merges; nothing in the journal or the chat said the fleet was stale.
+ *  Say it once a day, naming the files, so the owner can commit, stash or discard them. */
+async function noteEditsBlockUpdate(dirty: string, g: (...a: string[]) => Promise<{ stdout: { toString(): string }; exitCode: number }>) {
+  const today = new Date().toISOString().slice(0, 10);
+  try { if (readFileSync(EDITS_NOTE(), "utf8").trim() === today) return; } catch {}
+  await g("fetch", "-q", "origin");
+  const head = (await g("rev-parse", "HEAD")).stdout.toString().trim();
+  const up = (await g("rev-parse", "@{u}")).stdout.toString().trim();
+  if (!head || !up || head === up) return; // no upstream work waiting → the edits are not costing anything
+  const behind = (await g("rev-list", "--count", "HEAD..@{u}")).stdout.toString().trim();
+  const files = dirtyPaths(dirty);
+  try { writeFileSync(EDITS_NOTE(), today); } catch {}
+  const { journal, hostName, loadConfig } = await import("./core");
+  const host = hostName(loadConfig());
+  journal(host, `⬆️ self-update paused: local edits (${files}) are ${behind} commit(s) behind ${up.slice(0, 7)}`);
+  const { notify } = await import("./notify");
+  void notify([L(`Updating the fleet's own code is paused on ${host}: ${behind} commit(s) are waiting, but the checkout has uncommitted changes in ${files}. Commit, stash or discard them to let it update.`,
+    `${host} 的框架代码更新已暂停：有 ${behind} 个 commit 等待更新，但代码目录里有未提交改动（${files}）。提交、stash 或丢弃这些改动后会自动恢复更新。`)].join("\n"),
+    loadConfig(), { kind: "notice" });
+}
+
 /** Fast-forward framework code if origin has new commits that pass tests. Returns true if updated. */
 export async function selfUpdate(opts: { busy?: number; force?: boolean; deploy?: boolean } = {}): Promise<boolean> {
   // never swap code (and then restart) under running work: defer until this host is idle
   if ((opts.busy ?? 0) > 0 && !opts.force) return false;
   const g = (...a: string[]) => $`git ${a}`.cwd(CODE).quiet().nothrow();
   if (!existsSync(join(CODE, ".git"))) return false;
-  if ((await g("status", "--porcelain", "--untracked-files=no")).stdout.toString().trim()) return false; // local edits → skip
+  const dirty = (await g("status", "--porcelain", "--untracked-files=no")).stdout.toString().trim();
+  if (dirty) { await noteEditsBlockUpdate(dirty, g); return false; } // local edits → skip
   await g("fetch", "-q", "origin");
   const head = (await g("rev-parse", "HEAD")).stdout.toString().trim();
   const up = (await g("rev-parse", "@{u}")).stdout.toString().trim();
