@@ -53,7 +53,10 @@ test("cards still open are counted, with the age of the oldest one", () => {
 // a checkout pinned 20+ commits back by local edits — every merged fix inert there, every figure from the old formula.
 test("metrics say which code produced them, and when that code is behind or dirty", () => {
   const m = M.computeMetrics(7);
-  expect(m.code?.commit).toMatch(/^[0-9a-f]{7,}$/);
+  expect(m.code?.checkout).toMatch(/^[0-9a-f]{7,}$/);
+  expect(m.code?.running).toMatch(/^[0-9a-f]{7,}$/);
+  // a daemon started from this checkout normally runs it; a checkout pulled under a live daemon does not
+  expect(m.code?.stale).toBe(m.code!.running !== m.code!.checkout);
   expect(m.code?.dirty_files).toBeGreaterThanOrEqual(0);
 
   // throwaway repo: one commit on main, origin/main one ahead, one uncommitted edit
@@ -76,6 +79,8 @@ test("metrics say which code produced them, and when that code is behind or dirt
   const s = M.codeState(dir)!;
   expect(s.behind_origin).toBe(1);
   expect(s.dirty_files).toBe(1);
+  expect(s.running).toBeNull(); // another checkout is not the one this process runs
+  expect(s.stale).toBe(false);
   expect(M.codeState(join(dir, "nope"))).toBeNull(); // no git checkout → null, not a false "clean"
   rmSync(dir, { recursive: true, force: true });
 });
