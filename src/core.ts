@@ -310,6 +310,13 @@ export function runningRev(): { rev?: string; rev_url?: string } {
   return (codeRev = { rev, rev_url: rev && repo ? `https://github.com/${repo}/commit/${rev}` : undefined });
 }
 
+/** The commit checked out on disk *now* — not the one this process loaded. A `git pull` by hand (another agent
+ *  restoring the checkout, the owner working in it) moves this without restarting the daemon, so the two can differ
+ *  for days while every merged fix stays inert. Compare with runningRev() to see it. */
+export function checkoutRev(root = CODE): string | undefined {
+  try { return Bun.spawnSync(["git", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim() || undefined; } catch { return undefined; }
+}
+
 /** The owner's "update every machine" (fleet/update.json, synced): each host updates once per request. */
 export const UPDATE_REQUEST = () => P("fleet", "update.json");
 

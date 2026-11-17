@@ -30,7 +30,7 @@ import { isWrite, runTool } from "../cloud/src/tools";
 import { cloudDeploy, startCloudBridge } from "./cloud";
 import { adoptCloudUrl, readHubToml } from "./sync";
 import { judgeAccuracy, level, needsApproval, noteStuckRoutine, proposeBatch, resolveProposals, routineQueued, supersedeProposed } from "./autonomy";
-import { CODE, L, UPDATE_REQUEST, type UpdateState, setUpdateState, updateState, allowedClis, cliHintPatch, capOk, idTagFor, isPrimary, runningRev, setApprovalGate, setIdTag } from "./core";
+import { CODE, L, UPDATE_REQUEST, type UpdateState, setUpdateState, updateState, allowedClis, checkoutRev, cliHintPatch, capOk, idTagFor, isPrimary, runningRev, setApprovalGate, setIdTag } from "./core";
 import { accountEnv, accountsStatus, classify, failoverAccount, pendingLoginIds, pickAccount, reportFailure, retryLogins, submitLoginCode } from "./accounts";
 import { channelPrompt, channels, resolveChannels, updateChannel } from "./channels";
 import { shellBash } from "./shell";
@@ -1002,10 +1002,18 @@ async function daemon(cfg: Cfg) {
   // a stray rejection (a voided notify/medic) used to kill the process → systemd restart → running work requeued
   process.on("unhandledRejection", (e) => console.error("unhandled rejection", e));
   process.on("uncaughtException", (e) => console.error("uncaught exception", e));
-  let lastUpdate = 0, failures = 0;
+  let lastUpdate = 0, failures = 0, revChecked = false;
   for (;;) {
     const c = loadConfig();
     if (adoptCloudUrl(c.cloud?.url)) journal(host, `☁️ hub moved: now syncing with ${c.cloud.url}`);
+    // A checkout that moved under a live daemon (a `git pull` by hand, another agent restoring it) never restarts this
+    // process, so every fix merged upstream stays inert while the host keeps reporting from code nobody runs. Say it
+    // once per boot: a restart is the only fix, and only a human or a service manager can do it.
+    if (!revChecked) {
+      revChecked = true;
+      const run = runningRev().rev, disk = checkoutRev();
+      if (run && disk && run !== disk) journal(host, `⚠️ daemon runs ${run.slice(0, 7)} but the checkout is at ${disk.slice(0, 7)}: fixes merged since then are inert until a restart`);
+    }
     if (existsSync(RESTART_FLAG())) { // `hub restart` (throttled) / `hub restart --force`
       const force = readFileSync(RESTART_FLAG(), "utf8").includes("force");
       if (restartAllowed(force)) { unlinkSync(RESTART_FLAG()); void drainAndExit("restart", host); }
